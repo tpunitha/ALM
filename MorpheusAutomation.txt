@@ -1,0 +1,176 @@
+try{
+write-host "start to check the value of checkbox Recreate_when_VM_Exists"
+$IsExist = $Recreate_when_VM_Exists
+#if($IsExist -ieq "true"){
+#write-host "*********As input from user, VM $env:SimulatorName already exist, no need to create new one******"
+#write-host "********* Start to check if the existing VM is accessiable ******"
+#ping $env:SimulatorName
+#if(!$?){
+#write-host "******* the VM $env:SimulatorName is NOT accessiable, check it again ******"
+#exit 1
+#}
+#exit 0
+#}
+write-host "start to decide which JSON tempalte will be adopted"
+
+$JSON_file='\\isr1appcc02\scm\omd\Jenkins_JSON_files\SQC_Archer.json'
+$major_minor=$env:BUILD_VERSION.Substring(0,5)
+$build_number=$env:BUILD_VERSION.Substring(9,5)
+$IsNeedMCR='false'
+$major_minor=$major_minor -as [float]
+$build_number=$build_number -as [int]
+$IsNeedNewIntime='false'
+
+if($major_minor -ge 17.53){
+	$IsNeedMCR = 'true'
+}
+if($env:IsTestingFarmVM -ieq 'false'){
+	if(($IsNeedMCR -ieq 'true') -and ($env:IsCISimulator -ieq 'true')){
+	$JSON_file = '\\isr1appcc02\scm\omd\Jenkins_JSON_files\CI_Archer_MCR_Small.json'
+	}elseif(($IsNeedMCR -ieq 'false') -and ($env:IsCISimulator -ieq 'true')){
+	$JSON_file = '\\isr1appcc02\scm\omd\Jenkins_JSON_files\CI_Archer_Small.json'
+	}elseif(($IsNeedMCR -ieq 'true') -and ($env:IsCISimulator -ieq 'false')){
+	$JSON_file = '\\isr1appcc02\scm\omd\Jenkins_JSON_files\SQC_Archer_MCR_Small.json'
+	}else{
+	$JSON_file = '\\isr1appcc02\scm\omd\Jenkins_JSON_files\SQC_Archer_Small.json'
+	}
+}else{
+	if($IsNeedMCR -ieq 'true'){
+	$JSON_file = '\\isr1appcc02\scm\omd\Jenkins_JSON_files\TestFarm_Archer_MCR.json'}
+	else{
+	$JSON_file = '\\isr1appcc02\scm\omd\Jenkins_JSON_files\TestFarm_Archer.json'}
+}
+
+if( ($major_minor -eq 18.00) ){
+        if($build_number -ge 11528){
+           $IsNeedNewIntime='true'
+		}
+	if(($env:IsCISimulator -ieq 'true')){
+		if($IsNeedNewIntime -ieq 'true'){
+			$JSON_file = '\\isr1appcc02\scm\omd\Jenkins_JSON_files\CI_A800_intime.json'
+		}else{
+			$JSON_file = '\\isr1appcc02\scm\omd\Jenkins_JSON_files\CI_A800.json'
+			}
+	}
+	else {
+		if($env:IsTestingFarmVM -ieq 'true'){
+			if($IsNeedNewIntime -ieq 'true'){
+			$JSON_file = '\\isr1appcc02\scm\omd\Jenkins_JSON_files\TestFarm_A800_intime.json'
+			}
+			else{
+						$JSON_file = '\\isr1appcc02\scm\omd\Jenkins_JSON_files\TestFarm_A800.json'
+				}
+		}
+		else{
+			if($IsNeedNewIntime -ieq 'true'){
+			$JSON_file = '\\isr1appcc02\scm\omd\Jenkins_JSON_files\SQC_A800_intime.json'
+			}
+			else{
+						$JSON_file = '\\isr1appcc02\scm\omd\Jenkins_JSON_files\SQC_A800.json'
+				}
+		}
+	}
+}
+write-host "print the JSON file : $JSON_file "
+$IsRecreate= $env:Recreate_when_VM_Exists
+if($IsRecreate -ieq "true"){
+	write-host "*******start to check if VM $env:SimulatorName exist ***********"
+	Morpheus instances get %SimulatorName%
+	if($?){
+		write-host "************VM $env:SimulatorName does exist, remove it now********"
+		Morpheus instances remove $env:SimulatorName --yes --force
+		if(!$?){
+		write-host "****Failed to delete the existing VM $env:SimulatorName ***********"
+		exit 1
+		}
+		else {
+			write-host "****** wait 30 seconds for deleting VM **********"
+			sleep 60
+		}
+	}
+}
+
+write-host "***** start to create instances by JSON template ****"
+write-host "JSONFiles = $JSON_file"
+$expiredays=$env:ExpireDays
+write-host "expiredays=$expiredays"
+if(($expiredays -eq "NEVER")){
+	Morpheus instances add %SimulatorName%  --payload $JSON_file
+	if(!$?){
+		write-host " ********Create VM Failed !! ********"
+		exit 1 }
+}
+if(($expiredays -ne "NEVER")){
+	Morpheus instances add %SimulatorName%  --payload $JSON_file --expire-days %ExpireDays%
+	if(!$?){
+		write-host " ********Create VM Failed !! ********"
+		exit 1 }
+}
+
+write-host "****  Get the status of instances every 2 minutes until VM RUNNING or FAILED****"
+
+set-variable -name "LogName" -value $env:SimulatorName
+
+$MorpheusLog = "D:\MorpheusLogs\temp\Status_$LogName.log"
+
+if((Test-path $MorpheusLog -PathType Leaf)){
+   Remove-Item -path $MorpheusLog
+   write-host "*****Deleted the old existing file $MorpheusLog *****"
+}
+New-Item -path $MorpheusLog -ItemType File
+write-host "*****check the status of $env:SimulatorName in  $MorpheusLog *****"
+Morpheus instances get %SimulatorName% --refresh 120 | out-file $MorpheusLog
+if(!$?){
+  write-host "******* Get the status of %SimulatorName% failed ***********"
+  exit 1
+}
+$logs = get-content -path $MorpheusLog
+$IsSuccess="FALSE"
+
+foreach($line in $logs){
+   if($line -like '*Status: RUNNING*'){
+		write-host "create VM successfully!!!!" 
+		#write-host "IsCISimulator = $env:IsCISimulator"
+		write-host "*********start to register this new VM as Jenkins Node************"
+		write-host "net use \\$env:SimulatorName\c$ /user:local\autologonuser Columbia03"
+		net use \\$env:SimulatorName\c$ /user:local\autologonuser Columbia03
+		if(!$?) {exit 1}
+                #in order to fix the psexec command issue
+                xcopy D:\MorpheusScripts\UpdateDescriptionPerStartup.ps1 \\$env:SimulatorName\c$\Morpheus
+		write-host "xcopy D:\MorpheusScripts\Createtxt.ps1 \\$env:SimulatorName\c$"
+		xcopy D:\MorpheusScripts\Createtxt.ps1 \\$env:SimulatorName\c$
+		if(!$?) {exit 1}
+		write-host "psexec64 \\$env:SimulatorName -u local\autologonuser -p 'Columbia03' /s cmd /c powershell -ExecutionPolicy Bypass -file c:\CreateTXT.ps1"
+		psexec64 \\$env:SimulatorName -u local\autologonuser -p 'Columbia03' powershell.exe -ExecutionPolicy Bypass -f "c:\CreateTXT.ps1"
+        #psexec -u local\autologonuser -p 'Columbia03' \\$env:SimulatorName cmd /c "echo . | powershell 'C:\CreateTXT.ps1'"
+		$IsSuccess="TRUE"
+		exit 0 
+			}
+}
+if($IsSuccess=="FALSE")
+{
+	write-host "********* Create VM failed!!!! **************" 
+	exit 1
+}
+else
+{
+	write-host "******** the status of VM is not RUNNING, create VM Failed !! ****************"
+	exit 0
+}
+}catch{
+	write-host "************* Errors occurred when creating VM on Morpheus *************"
+	exit 1
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
